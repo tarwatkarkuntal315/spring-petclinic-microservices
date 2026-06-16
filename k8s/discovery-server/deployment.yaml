@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: discovery-server
+  namespace: petclinic
+  labels:
+    app.kubernetes.io/name: discovery-server
+    app.kubernetes.io/part-of: petclinic
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: discovery-server
+  template:
+    metadata:
+      labels:
+        app: discovery-server
+        app.kubernetes.io/name: discovery-server
+        app.kubernetes.io/part-of: petclinic
+    spec:
+      initContainers:
+        - name: wait-for-config-server
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              until wget -qO- http://config-server:8888/actuator/health; do
+                echo "waiting for config-server..."; sleep 5
+              done
+      containers:
+        - name: discovery-server
+          # Replace <ACCOUNT_ID> with your AWS account ID before applying.
+          # ECR repo: petclinic/discovery-server (infra/modules/ecr/main.tf)
+          image: <ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/petclinic/discovery-server:latest
+          ports:
+            - containerPort: 8761
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8761
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8761
+            initialDelaySeconds: 60
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
