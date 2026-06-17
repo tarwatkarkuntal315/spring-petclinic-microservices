@@ -1,0 +1,174 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+
+  # ── 1. Build & test every service with Maven ──────────────────────────────
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: temurin
+          cache: maven
+
+      - name: Build and test with Maven
+        run: ./mvnw -B package
+
+  # ── 2. Validate every manifest under k8s/ parses as valid YAML ───────────
+  validate-k8s:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install pyyaml
+        run: pip install pyyaml
+
+      - name: Validate Kubernetes manifest YAML
+        shell: python
+        run: |
+          import yaml, pathlib, sys
+
+          errors = []
+          manifests = sorted(pathlib.Path('k8s').rglob('*.yaml'))
+          for path in manifests:
+              try:
+                  doc = yaml.safe_load(path.read_text())
+                  if doc is None:
+                      errors.append(f'EMPTY  {path}')
+                      continue
+                  print(f'OK  {path}  kind={doc.get("kind", "?")}')
+              except yaml.YAMLError as e:
+                  errors.append(f'ERROR  {path}: {e}')
+
+          if errors:
+              print('Validation errors:', file=sys.stderr)
+              for e in errors:
+                  print(f'  {e}', file=sys.stderr)
+              sys.exit(1)
+
+          print(f'\n{len(manifests)} manifest(s) validated successfully.')
+
+  # ── 3. Build Docker images and push to ECR (push to main only) ──────────
+  docker-push:
+    if: github.event_name == 'push'
+    needs: build-test
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    strategy:
+      matrix:
+        include:
+          - { service: config-server,     port: 8888 }
+          - { service: discovery-server,  port: 8761 }
+          - { service: api-gateway,       port: 8080 }
+          - { service: customers-service, port: 8081 }
+          - { service: visits-service,    port: 8082 }
+          - { service: vets-service,      port: 8083 }
+          - { service: admin-server,      port: 9090 }
+          - { service: genai-service,     port: 8084 }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: temurin
+          cache: maven
+
+      - name: Build service JAR (skip tests — already run in build-test)
+        run: ./mvnw -B package -DskipTests -pl spring-petclinic-${{ matrix.service }} -am
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Log in to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push image to ECR
+        env:
+          REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+        run: |
+          IMAGE_TAG="${GITHUB_SHA::8}"
+
+          # Locate the service JAR built by Maven (excludes sources/tests jars)
+          JAR=$(find spring-petclinic-${{ matrix.service }}/target \
+                  -name "*.jar" \
+                  ! -name "*-sources.jar" \
+                  ! -name "*-tests.jar" \
+                  | head -1)
+          ARTIFACT_NAME="$(basename "${JAR}" .jar)"
+
+          docker build \
+            -f docker/Dockerfile \
+            --build-arg ARTIFACT_NAME="${ARTIFACT_NAME}" \
+            --build-arg EXPOSED_PORT=${{ matrix.port }} \
+            --platform linux/amd64 \
+            -t "${REGISTRY}/petclinic/${{ matrix.service }}:${IMAGE_TAG}" \
+            "spring-petclinic-${{ matrix.service }}/target/"
+
+          docker push "${REGISTRY}/petclinic/${{ matrix.service }}:${IMAGE_TAG}"
+
+  # ── 4. Deploy updated images to EKS (push to main only) ─────────────────
+  deploy:
+    if: github.event_name == 'push'
+    needs: docker-push
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - name: Configure kubectl for EKS
+        # Cluster name matches infra/modules/eks/variables.tf default (petclinic-eks)
+        run: aws eks update-kubeconfig --name petclinic-eks --region us-east-1
+
+      - name: Apply namespace
+        run: kubectl apply -f k8s/namespace.yaml
+
+      - name: Roll out updated images
+        run: |
+          IMAGE_TAG="${GITHUB_SHA::8}"
+          AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          REGISTRY="${AWS_ACCOUNT_ID}.dkr.ecr.us-east-1.amazonaws.com"
+
+          for SERVICE in \
+            config-server \
+            discovery-server \
+            api-gateway \
+            customers-service \
+            visits-service \
+            vets-service \
+            admin-server \
+            genai-service; do
+            kubectl set image deployment/${SERVICE} \
+              ${SERVICE}=${REGISTRY}/petclinic/${SERVICE}:${IMAGE_TAG} \
+              -n petclinic
+          done
