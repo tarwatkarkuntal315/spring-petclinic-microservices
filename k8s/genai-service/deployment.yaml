@@ -1,0 +1,65 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: genai-service
+  namespace: petclinic
+  labels:
+    app.kubernetes.io/name: genai-service
+    app.kubernetes.io/part-of: petclinic
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: genai-service
+  template:
+    metadata:
+      labels:
+        app: genai-service
+        app.kubernetes.io/name: genai-service
+        app.kubernetes.io/part-of: petclinic
+    spec:
+      initContainers:
+        - name: wait-for-dependencies
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              until wget -qO- http://config-server:8888/actuator/health && \
+                    wget -qO- http://discovery-server:8761/actuator/health; do
+                echo "waiting for config-server and discovery-server..."; sleep 5
+              done
+      containers:
+        - name: genai-service
+          # Replace <ACCOUNT_ID> with your AWS account ID before applying.
+          # ECR repo: petclinic/genai-service (infra/modules/ecr/main.tf)
+          image: <ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/petclinic/genai-service:latest
+          ports:
+            - containerPort: 8084
+          env:
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: genai-secrets
+                  key: OPENAI_API_KEY
+          readinessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8084
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8084
+            initialDelaySeconds: 60
+            periodSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
