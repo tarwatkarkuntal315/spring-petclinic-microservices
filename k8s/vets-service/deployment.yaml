@@ -36,6 +36,21 @@ spec:
           image: <ACCOUNT_ID>.dkr.ecr.us-east-1.amazonaws.com/petclinic/vets-service:latest
           ports:
             - containerPort: 8083
+          env:
+            - name: SPRING_DATASOURCE_URL
+              value: "jdbc:mysql://mysql:3306/petclinic?useSSL=false&allowPublicKeyRetrieval=true"
+            - name: SPRING_DATASOURCE_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secret
+                  key: username
+            - name: SPRING_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-secret
+                  key: password
+            - name: SPRING_DATASOURCE_INITIALIZATION_MODE
+              value: "always"
           readinessProbe:
             httpGet:
               path: /actuator/health
