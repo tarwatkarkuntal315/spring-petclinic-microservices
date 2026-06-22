@@ -27,3 +27,5 @@ generated/
 *.tfstate
 *.tfstate.*
 *.tfvars
+
+.env
