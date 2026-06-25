@@ -7,9 +7,9 @@
 
 Summary: **all executed tests passed.** Health 7/7, full API surface
 functional, observability verified, IaC validated (Terraform config valid,
-29/29 K8s manifests valid). Distributed tracing (Zipkin) deployed but span
-emission pending endpoint wiring; Terraform `plan`/`apply` intentionally not
-run (no AWS credentials, zero-budget).
+29/29 K8s manifests valid). Distributed tracing (Zipkin) captured across all
+services including GenAI tool-call spans. Terraform `plan`/`apply` intentionally
+not run (no AWS credentials, zero-budget).
 
 ---
 
@@ -54,7 +54,7 @@ All seven core services returned HTTP 200 on `/actuator/health`.
 |------|--------|--------|
 | OBS-01 Prometheus targets | All 5 targets UP (api-gateway, customers, vets, visits, prometheus) | PASS |
 | OBS-02 Grafana dashboard | "Spring Petclinic Metrics" shows live HTTP latency + request activity | PASS |
-| OBS-03 Zipkin deployed | UI loads; span emission requires tracing-endpoint wiring (documented as EKS-target work) | PARTIAL |
+| OBS-03 Zipkin distributed tracing | Traces captured across services (api-gateway, genai, customers, vets, visits); GenAI chat traced end-to-end with tool-call spans | PASS |
 
 ## Layer 5 — Resilience
 
@@ -66,12 +66,12 @@ All seven core services returned HTTP 200 on `/actuator/health`.
 
 ### Known limitations (documented honestly)
 
-- **Distributed tracing (Zipkin):** the tracing-server is deployed and reachable,
-  but the application services are not currently configured to emit spans to it.
-  Enabling this requires setting the tracing endpoint
-  (`MANAGEMENT_ZIPKIN_TRACING_ENDPOINT=http://tracing-server:9411/api/v2/spans`)
-  plus a sampling probability, then restarting the services. Captured as
-  production-hardening work.
+- **Distributed tracing (Zipkin):** enabled by adding
+  `MANAGEMENT_ZIPKIN_TRACING_ENDPOINT` and `MANAGEMENT_TRACING_SAMPLING_PROBABILITY=1.0`
+  to the application services. After restart and traffic generation, traces were
+  captured across api-gateway, genai-service, customers-service, vets-service and
+  visits-service, including Spring AI tool-call spans (listOwners,
+  addOwnerToPetclinic, addPetToOwner, listVets).
 - **No live AWS apply:** all AWS resources are defined and validated as IaC only.
   `terraform validate` passes cleanly; `terraform plan` correctly halts at AWS
   credential resolution (none provided, per the zero-budget constraint). The EKS

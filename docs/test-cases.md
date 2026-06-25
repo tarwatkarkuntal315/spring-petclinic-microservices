@@ -54,7 +54,7 @@ All requests routed via the API gateway on port 8080.
 |----|------|--------|----------|
 | OBS-01 | Prometheus scraping | Prometheus `:9091` → Status → Targets | All targets UP |
 | OBS-02 | Grafana dashboard | Grafana `:3030` → "Spring Petclinic Metrics" | Panels show live data |
-| OBS-03 | Zipkin deployed | Zipkin `:9411` reachable | UI loads (tracing endpoint wiring noted as EKS-target work) |
+| OBS-03 | Zipkin tracing | Zipkin `:9411` Run Query after traffic | Distributed traces captured across services |
 
 ## Layer 5 — Resilience (local analog of chaos test)
 
